@@ -1,0 +1,301 @@
+name: shared-infra
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: shared_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${INFRA_BIND_HOST:?INFRA_BIND_HOST is required}:${POSTGRES_PORT:?POSTGRES_PORT is required}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      shared-infra:
+        aliases:
+          - postgres
+          - shared-postgres
+
+  redis:
+    image: redis:7-alpine
+    container_name: shared_redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${INFRA_BIND_HOST:?INFRA_BIND_HOST is required}:${REDIS_PORT:?REDIS_PORT is required}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      shared-infra:
+        aliases:
+          - redis
+          - shared-redis
+
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: shared_langfuse
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${LANGFUSE_DATABASE_URL:?LANGFUSE_DATABASE_URL is required}
+      NEXTAUTH_URL: ${LANGFUSE_PUBLIC_URL:?LANGFUSE_PUBLIC_URL is required}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?LANGFUSE_NEXTAUTH_SECRET is required}
+      SALT: ${LANGFUSE_SALT:?LANGFUSE_SALT is required}
+      AUTH_DISABLE_SIGNUP: ${LANGFUSE_AUTH_DISABLE_SIGNUP:?LANGFUSE_AUTH_DISABLE_SIGNUP is required}
+      TELEMETRY_ENABLED: ${LANGFUSE_TELEMETRY_ENABLED:?LANGFUSE_TELEMETRY_ENABLED is required}
+    ports:
+      - "${INFRA_BIND_HOST:?INFRA_BIND_HOST is required}:${LANGFUSE_PORT:?LANGFUSE_PORT is required}:3000"
+    networks:
+      shared-infra:
+        aliases:
+          - langfuse
+          - shared-langfuse
+
+  volume-permission-helper:
+    image: alpine:3.20
+    container_name: rustfs-volume-permission-helper
+    restart: "no"
+    command: >
+      sh -c "
+      chown -R 10001:10001 /data /logs &&
+      echo 'RustFS volume permissions are ready'
+      "
+    volumes:
+      - rustfs-data:/data
+      - rustfs-logs:/logs
+
+  rustfs:
+    image: rustfs/rustfs:1.0.0-beta.12-glibc
+    container_name: shared-rustfs
+    restart: unless-stopped
+    depends_on:
+      volume-permission-helper:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - .env
+    environment:
+      RUSTFS_VOLUMES: "/data"
+      RUSTFS_ADDRESS: "0.0.0.0:9000"
+      RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS: "${RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS:?RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS is required}"
+      RUSTFS_ACCESS_KEY: "${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}"
+      RUSTFS_SECRET_KEY: "${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}"
+      RUSTFS_OBS_LOGGER_LEVEL: "${RUSTFS_OBS_LOGGER_LEVEL:?RUSTFS_OBS_LOGGER_LEVEL is required}"
+      RUSTFS_OBS_LOG_DIRECTORY: "/app/logs"
+      RUSTFS_UNSAFE_BYPASS_DISK_CHECK: "${RUSTFS_UNSAFE_BYPASS_DISK_CHECK:?RUSTFS_UNSAFE_BYPASS_DISK_CHECK is required}"
+    ports:
+      - "${INFRA_BIND_HOST:?INFRA_BIND_HOST is required}:${RUSTFS_API_PORT:?RUSTFS_API_PORT is required}:9000"
+      - "${INFRA_BIND_HOST:?INFRA_BIND_HOST is required}:${RUSTFS_CONSOLE_PORT:?RUSTFS_CONSOLE_PORT is required}:9001"
+    volumes:
+      - rustfs-data:/data
+      - rustfs-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      shared-infra:
+        aliases:
+          - rustfs
+          - shared-rustfs
+
+
+  # ============================================================
+  # Firecrawl
+  # ============================================================
+
+  firecrawl:
+    image: ghcr.io/firecrawl/firecrawl:latest
+    container_name: shared_firecrawl
+    restart: unless-stopped
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+      firecrawl-rabbitmq:
+        condition: service_healthy
+
+      firecrawl-nuq-postgres:
+        condition: service_healthy
+
+      firecrawl-playwright:
+        condition: service_started
+
+    environment:
+      HOST: ${INFRA_BIND_HOST:?INFRA_BIND_HOST is required}
+      PORT: ${FIRECRAWL_INTERNAL_PORT:?FIRECRAWL_INTERNAL_PORT is required}
+      ENV: ${FIRECRAWL_ENV:?FIRECRAWL_ENV is required}
+
+      REDIS_URL: ${FIRECRAWL_REDIS_URL:?FIRECRAWL_REDIS_URL is required}
+      REDIS_RATE_LIMIT_URL: ${FIRECRAWL_REDIS_RATE_LIMIT_URL:?FIRECRAWL_REDIS_RATE_LIMIT_URL is required}
+
+      PLAYWRIGHT_MICROSERVICE_URL: ${FIRECRAWL_PLAYWRIGHT_URL:?FIRECRAWL_PLAYWRIGHT_URL is required}
+
+      POSTGRES_USER: ${FIRECRAWL_POSTGRES_USER:?FIRECRAWL_POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${FIRECRAWL_POSTGRES_PASSWORD:?FIRECRAWL_POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${FIRECRAWL_POSTGRES_DB:?FIRECRAWL_POSTGRES_DB is required}
+      POSTGRES_HOST: ${FIRECRAWL_POSTGRES_HOST:?FIRECRAWL_POSTGRES_HOST is required}
+      POSTGRES_PORT: ${FIRECRAWL_POSTGRES_PORT:?FIRECRAWL_POSTGRES_PORT is required}
+
+      NUQ_RABBITMQ_URL: ${FIRECRAWL_RABBITMQ_URL:?FIRECRAWL_RABBITMQ_URL is required}
+
+      USE_DB_AUTHENTICATION: ${FIRECRAWL_USE_DB_AUTHENTICATION:?FIRECRAWL_USE_DB_AUTHENTICATION is required}
+
+      NUM_WORKERS_PER_QUEUE: ${FIRECRAWL_NUM_WORKERS_PER_QUEUE:?FIRECRAWL_NUM_WORKERS_PER_QUEUE is required}
+      CRAWL_CONCURRENT_REQUESTS: ${FIRECRAWL_CRAWL_CONCURRENT_REQUESTS:?FIRECRAWL_CRAWL_CONCURRENT_REQUESTS is required}
+      MAX_CONCURRENT_JOBS: ${FIRECRAWL_MAX_CONCURRENT_JOBS:?FIRECRAWL_MAX_CONCURRENT_JOBS is required}
+      BROWSER_POOL_SIZE: ${FIRECRAWL_BROWSER_POOL_SIZE:?FIRECRAWL_BROWSER_POOL_SIZE is required}
+
+      HARNESS_STARTUP_TIMEOUT_MS: ${FIRECRAWL_HARNESS_STARTUP_TIMEOUT_MS:?FIRECRAWL_HARNESS_STARTUP_TIMEOUT_MS is required}
+
+      LOGGING_LEVEL: ${FIRECRAWL_LOGGING_LEVEL:?FIRECRAWL_LOGGING_LEVEL is required}
+
+      # Resource / worker tuning
+      NUQ_WORKER_COUNT: ${FIRECRAWL_NUQ_WORKER_COUNT:?FIRECRAWL_NUQ_WORKER_COUNT is required}
+      MAX_CPU: ${FIRECRAWL_MAX_CPU:?FIRECRAWL_MAX_CPU is required}
+      MAX_RAM: ${FIRECRAWL_MAX_RAM:?FIRECRAWL_MAX_RAM is required}
+
+    command:
+      - node
+      - dist/src/harness.js
+      - --start-docker
+
+    ports:
+      - "${INFRA_BIND_HOST:?INFRA_BIND_HOST is required}:${FIRECRAWL_PORT:?FIRECRAWL_PORT is required}:${FIRECRAWL_INTERNAL_PORT:?FIRECRAWL_INTERNAL_PORT is required}"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      shared-infra:
+        aliases:
+          - firecrawl
+          - shared-firecrawl
+
+
+  firecrawl-playwright:
+    image: ghcr.io/firecrawl/playwright-service:latest
+    container_name: shared_firecrawl_playwright
+    restart: unless-stopped
+
+    environment:
+      PORT: ${FIRECRAWL_PLAYWRIGHT_PORT:?FIRECRAWL_PLAYWRIGHT_PORT is required}
+      ALLOW_LOCAL_WEBHOOKS: ${FIRECRAWL_ALLOW_LOCAL_WEBHOOKS:?FIRECRAWL_ALLOW_LOCAL_WEBHOOKS is required}
+      BLOCK_MEDIA: ${FIRECRAWL_BLOCK_MEDIA:?FIRECRAWL_BLOCK_MEDIA is required}
+      MAX_CONCURRENT_PAGES: ${FIRECRAWL_PLAYWRIGHT_MAX_CONCURRENT_PAGES:?FIRECRAWL_PLAYWRIGHT_MAX_CONCURRENT_PAGES is required}
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=1g
+
+    networks:
+      shared-infra:
+        aliases:
+          - firecrawl-playwright
+
+
+  firecrawl-rabbitmq:
+    image: rabbitmq:3-management
+    container_name: shared_firecrawl_rabbitmq
+    restart: unless-stopped
+
+    environment:
+      RABBITMQ_DEFAULT_USER: ${FIRECRAWL_RABBITMQ_USER:?FIRECRAWL_RABBITMQ_USER is required}
+      RABBITMQ_DEFAULT_PASS: ${FIRECRAWL_RABBITMQ_PASSWORD:?FIRECRAWL_RABBITMQ_PASSWORD is required}
+
+    volumes:
+      - firecrawl_rabbitmq_data:/var/lib/rabbitmq
+
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    networks:
+      shared-infra:
+        aliases:
+          - firecrawl-rabbitmq
+
+
+  firecrawl-nuq-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres:latest
+    container_name: shared_firecrawl_nuq_postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${FIRECRAWL_POSTGRES_USER:?FIRECRAWL_POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${FIRECRAWL_POSTGRES_PASSWORD:?FIRECRAWL_POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${FIRECRAWL_POSTGRES_DB:?FIRECRAWL_POSTGRES_DB is required}
+
+    volumes:
+      - firecrawl_nuq_postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    networks:
+      shared-infra:
+        aliases:
+          - firecrawl-nuq-postgres
+
+
+networks:
+  shared-infra:
+    external: true
+    name: ${SHARED_INFRA_NETWORK:-shared-infra}
+
+
+volumes:
+  postgres_data:
+  redis_data:
+
+  rustfs-data:
+  rustfs-logs:
+
+  firecrawl_rabbitmq_data:
+  firecrawl_nuq_postgres_data:
