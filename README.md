@@ -169,6 +169,59 @@ Cek logs Langfuse:
 docker compose logs -f langfuse
 ```
 
+## 7. Backup PostgreSQL manual
+
+Script backup PostgreSQL utama tersedia di:
+
+```bash
+./scripts/backup-postgres.sh
+```
+
+Script ini melakukan backup container `shared_postgres` dengan `pg_dumpall`, sehingga semua database, role, dan global object ikut tersimpan. Hasil backup berupa plain SQL terkompresi `.sql.gz` di folder:
+
+```bash
+backups/postgres/
+```
+
+Jalankan dari root repository:
+
+```bash
+./scripts/backup-postgres.sh
+```
+
+Secara default, script menghapus backup yang lebih lama dari 7 hari setelah backup baru berhasil. Retention bisa diubah dengan environment variable:
+
+```bash
+RETENTION_DAYS=14 ./scripts/backup-postgres.sh
+```
+
+Output file menggunakan format nama:
+
+```text
+backups/postgres/postgres-all-YYYY-MM-DD-HHMMSS.sql.gz
+```
+
+Folder `backups/` di-ignore oleh git dan tidak boleh di-commit.
+
+### Restore PostgreSQL dari backup
+
+> Hati-hati: restore full dump dapat menimpa/mengubah database dan role yang ada. Pastikan target restore sudah benar sebelum menjalankan command ini.
+
+Load `.env` terlebih dahulu agar `POSTGRES_USER` tersedia:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+Restore backup ke container `shared_postgres`:
+
+```bash
+gunzip -c backups/postgres/postgres-all-YYYY-MM-DD-HHMMSS.sql.gz \
+  | docker exec -i shared_postgres psql -U "$POSTGRES_USER" -d postgres
+```
+
 ## Troubleshooting
 
 ### `network shared-infra declared as external, but could not be found`
