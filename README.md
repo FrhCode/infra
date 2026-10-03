@@ -1,6 +1,6 @@
 # Shared Infra
 
-Repository ini berisi Docker Compose untuk shared infrastructure, termasuk PostgreSQL, Redis, Langfuse, RustFS, dan Firecrawl.
+Repository ini berisi Docker Compose untuk shared development infrastructure, termasuk PostgreSQL, Redis, Langfuse, dan RustFS.
 
 > Penting: PostgreSQL harus dijalankan dan database/user Langfuse harus dibuat terlebih dahulu sebelum Langfuse dinaikkan. Kalau tidak, Langfuse bisa gagal start karena database, user, atau permission belum siap.
 
