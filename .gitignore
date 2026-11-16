@@ -2,3 +2,7 @@
 .env.local
 .env.*.local
 backups/
+
+# File kredensial lokal - jangan pernah di-commit
+rustfs-kariraksi-dev-credentials.txt
+*credentials*.txt
